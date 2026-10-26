@@ -9,7 +9,7 @@
 # 编译目标：360T7（MT7981），基于 SWRT-dev/swrt-gpl 的最新源码
 # 原理：直接复用官方构建镜像 paldier/swrt-docker（已内置交叉工具链与依赖），
 #       拉取最新 SWRT 源码后执行 make swrt-swrt360t7。
-# 产物：swrt-gpl/release/src-mtk-arm/image/ 下的固件（通常形如 3.0.0.4_360T7_*.pkgtb / *.bin）
+# 产物：swrt-gpl/release/src-mtk-arm/image/ 下的固件（通常形如 4.0.0.4_360T7_R5.2.9_*.pkgtb / *.bin）
 
 name: Build SWRT 360T7
 
@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'SWRT 源码分支/标签（默认 master 即最新源码）'
+        description: 'SWRT 源码分支/标签/commit（默认 master 即最新源码）'
         required: false
         default: 'master'
   push:
@@ -47,8 +47,10 @@ jobs:
 
       - name: 修复容器内权限
         run: |
-          sudo chown -R docker:docker /github/home /home/docker /project
-          sudo chown -R docker:docker /github/workspace
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          # 注意：container job 的 workspace 路径随 runner 版本变化（不再是 /github/workspace），
+          # 这里只对确定存在的目录 chown，避免因路径不存在导致整步失败。
+          sudo chown -R docker:docker /github/home /home/docker /project 2>/dev/null || true
 
       - name: 拉取 SWRT 最新源码
         run: |
@@ -67,21 +69,17 @@ jobs:
           echo "==> 开始编译 target: ${MODELCFG}"
           make "${MODELCFG}"
 
-      - name: 收集固件产物
+      - name: 检查固件产物
         run: |
           IMAGE_DIR="${PROJECT_DIR}/release/${SDK}/image"
-          echo "==> 编译输出目录内容:"
-          ls -alh "$IMAGE_DIR" || { echo "未找到 image 目录，列出上级目录:"; ls -alh "${PROJECT_DIR}/release/${SDK}"; }
-          mkdir -p /github/workspace/firmware
-          cp -rf "$IMAGE_DIR"/. /github/workspace/firmware/ 2>/dev/null || true
-          sudo chown -R docker:docker /github/workspace/firmware
-          echo "==> 待上传的产物:"
-          ls -alh /github/workspace/firmware
+          echo "==> 编译输出目录内容（可在此看到实际固件版本号文件名）:"
+          ls -alh "$IMAGE_DIR" || { echo "未找到 image 目录，列出 SDK 目录:"; ls -alh "${PROJECT_DIR}/release/${SDK}"; }
 
       - name: 上传固件产物
         uses: actions/upload-artifact@v4
         with:
           name: swrt-360t7-firmware
-          path: /github/workspace/firmware
+          # 直接从挂载卷 /project 上传（容器内确定存在），不再依赖不确定的 workspace 路径
+          path: /project/swrt-gpl/release/src-mtk-arm/image
           if-no-files-found: warn
           retention-days: 30
