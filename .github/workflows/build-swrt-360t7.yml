@@ -1,0 +1,87 @@
+# SWRT 360T7 固件自动编译工作流
+#
+# 用法：
+#   1. 将本文件放入你的 GitHub 仓库的  .github/workflows/  目录
+#   2. 在仓库的 Actions 页面选择 "Build SWRT 360T7" -> "Run workflow"
+#      （可选：通过 branch 输入指定源码分支/标签，默认 master = 最新源码）
+#   3. 编译完成后，在运行记录的 Artifacts 中下载 "swrt-360t7-firmware"
+#
+# 编译目标：360T7（MT7981），基于 SWRT-dev/swrt-gpl 的最新源码
+# 原理：直接复用官方构建镜像 paldier/swrt-docker（已内置交叉工具链与依赖），
+#       拉取最新 SWRT 源码后执行 make swrt-swrt360t7。
+# 产物：swrt-gpl/release/src-mtk-arm/image/ 下的固件（通常形如 3.0.0.4_360T7_*.pkgtb / *.bin）
+
+name: Build SWRT 360T7
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'SWRT 源码分支/标签（默认 master 即最新源码）'
+        required: false
+        default: 'master'
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-360t7:
+    name: Build 360T7 (swrt-swrt360t7)
+    runs-on: ubuntu-latest
+
+    # 官方构建镜像：已内置 MT798x 工具链与编译依赖，避免手动安装 gcc-8.4 等旧工具
+    container:
+      image: paldier/swrt-docker:latest
+      env:
+        MODELCFG: "swrt-swrt360t7"          # 360T7 的 Makefile target
+        SDK: "src-mtk-arm"                  # 360T7 所属 SDK 目录
+        GIT_REPO: "https://github.com/SWRT-dev/swrt-gpl.git"
+        PROJECT_DIR: "/project/swrt-gpl"
+      options: --user docker
+      volumes:
+        - /mnt:/project                     # 用更大的 /mnt 分区存放源码与产物
+
+    steps:
+      - name: 显示磁盘空间
+        run: df -h
+
+      - name: 修复容器内权限
+        run: |
+          sudo chown -R docker:docker /github/home /home/docker /project
+          sudo chown -R docker:docker /github/workspace
+
+      - name: 拉取 SWRT 最新源码
+        run: |
+          cd /project
+          BRANCH="${{ github.event.inputs.branch || 'master' }}"
+          echo "==> 拉取源码分支/标签: $BRANCH"
+          git clone --depth 1 --branch "$BRANCH" "$GIT_REPO"
+          echo "==> 当前源码最新提交:"
+          git -C /project/swrt-gpl log -1 --oneline
+
+      - name: 编译 360T7 固件
+        run: |
+          cd "${PROJECT_DIR}/release/${SDK}"
+          echo "==> 设置交叉编译工具链 (${SDK})"
+          sudo /home/docker/envs/toolchain.sh
+          echo "==> 开始编译 target: ${MODELCFG}"
+          make "${MODELCFG}"
+
+      - name: 收集固件产物
+        run: |
+          IMAGE_DIR="${PROJECT_DIR}/release/${SDK}/image"
+          echo "==> 编译输出目录内容:"
+          ls -alh "$IMAGE_DIR" || { echo "未找到 image 目录，列出上级目录:"; ls -alh "${PROJECT_DIR}/release/${SDK}"; }
+          mkdir -p /github/workspace/firmware
+          cp -rf "$IMAGE_DIR"/. /github/workspace/firmware/ 2>/dev/null || true
+          sudo chown -R docker:docker /github/workspace/firmware
+          echo "==> 待上传的产物:"
+          ls -alh /github/workspace/firmware
+
+      - name: 上传固件产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: swrt-360t7-firmware
+          path: /github/workspace/firmware
+          if-no-files-found: warn
+          retention-days: 30
